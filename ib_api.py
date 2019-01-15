@@ -21,14 +21,12 @@ import logging
 import datetime
 import threading
 import json
-import numpy as np
 import pandas as pd
-from pdb import set_trace
 from ibapi import wrapper
 from ibapi.client import EClient
 from ibapi.contract import Contract
 from ibapi.common import OrderId, ListOfContractDescription, BarData,\
-        HistogramDataList
+        HistogramDataList, TickerId
 from ibapi.order import Order
 from ibapi.order_state import OrderState
 
@@ -76,6 +74,16 @@ class IBWrapper(wrapper.EWrapper):
         wrapper.EWrapper.__init__(self)
 
 
+class HistoricalRequestError(Exception):
+    """Exceptions generated during requesting historical stock price data.
+    """
+    def __init__(self, message, errors):
+        super().__init__(message)
+
+        self.errors = errors
+        self.message = message
+
+
 class IBApp(IBWrapper, IBClient):
     """Main program class. The TWS calls nextValidId after connection, so
     the method is over-ridden to provide an entry point into the program.
@@ -86,6 +94,8 @@ class IBApp(IBWrapper, IBClient):
         {symbol: {'contract_info_dictionary'}}
     saved_orders (dict): keys are order ids, values are Order, Contract
         {id: {order: Order, contract: Contract}}
+    TODO
+    positions
     """
     def __init__(self):
         IBWrapper.__init__(self)
@@ -93,7 +103,7 @@ class IBApp(IBWrapper, IBClient):
 
         self.order_id = None
         self.saved_contract_details = {}
-
+        self.positions = []
         self._contract_details = {}
         self._saved_orders = {}
         self._open_orders = []
@@ -101,6 +111,12 @@ class IBApp(IBWrapper, IBClient):
         self._historical_data_req_end = False
         self._histogram = None
         self._load_contracts('contract_file.json')
+
+    def error(self, reqId: TickerId, errorCode: int, errorString: str):
+        """Overide EWrapper error method.
+        """
+        super().error(reqId, errorCode, errorString)
+        pass
 
     def _load_contracts(self, filename):
         """Load saved contracts.
@@ -138,16 +154,6 @@ class IBApp(IBWrapper, IBClient):
         current_order_id = self.order_id
         self.order_id += 1
         return current_order_id
-
-    def _get_next_contract_req_id(self):
-        """Retrieve the current class variable contract_req_id and increment
-        it by one.
-
-        Returns (int) current contract_req_id
-        """
-        current_contract_req_id = self.contract_req_id
-        self.contract_req_id += 1
-        return current_contract_req_id
 
     def get_contract_details(self, symbol=None):
         """Find the contract (STK, USD, NYSE|NASDAY.NMS|ARGA) for the symbol.
@@ -232,6 +238,36 @@ class IBApp(IBWrapper, IBClient):
         contract.secId = contract_info['secId']
 
         return contract
+
+    def get_positions(self):
+        """Get the account positions. If the class variable, positions, exists,
+        return that value, else call the EClient method reqPositions, wait for
+        a short time and then return the class variable positions.
+
+        Returns (dict): Dictionary of the positions information.
+        """
+        self.positions = []
+        self.reqPositions()
+        time.sleep(1)
+
+        return pd.DataFrame.from_dict(self.positions).set_index('account')
+
+    def position(self, account: str, contract: Contract, position: float,
+                 avgCost: float):
+        super().position(account, contract, position, avgCost)
+        self.positions.append({
+            'account': account,
+            'symbol': contract.symbol,
+            'secType': contract.secType,
+            'position': position,
+            'cost': avgCost
+        })
+
+    def positionEnd(self):
+        """Cancel the position subscription after a return.
+        """
+        super().positionEnd()
+        self.cancelPositions()
 
     def create_bracket_orders(self, req_orders=None):
         """Create orders, but do not place.
@@ -503,14 +539,17 @@ class IBApp(IBWrapper, IBClient):
         # Get the bar data for each symbol
         bars = {}
         for symbol in symbols:
-            bars[symbol] = self._req_historical_data(
-                symbol,
-                end_date=end_date,
-                duration="{} D".format(number_days),
-                size="1 day",
-                info="TRADES",
-                rth=rth
-            )
+            try:
+                bars[symbol] = self._req_historical_data(
+                    symbol,
+                    end_date=end_date,
+                    duration="{} D".format(number_days),
+                    size="1 day",
+                    info="TRADES",
+                    rth=rth
+                )
+            except HistoricalRequestError as err:
+                print(err.message)
 
         # Create a MultiIndex DataFrame.
         columns = pd.MultiIndex.from_product(
@@ -553,15 +592,22 @@ class IBApp(IBWrapper, IBClient):
                                info, rth, 1, False, [])
 
         # Wait until the request has returned (make it blocking).
+        start_time = datetime.datetime.now()
         while self._historical_data_req_end is not True:
+            if (datetime.datetime.now() - start_time).microseconds > 1000000:
+                raise HistoricalRequestError(
+                    "Timeout occurred while retrieving price data for {}"
+                    .format(symbol),
+                    "_req_historical_data({})".format(symbol)
+                )
             time.sleep(0.2)
 
         # Convert the data into
         bars_index = [b.date for b in self._historical_data]
         bars_data = [[float(b.open), float(b.high), float(b.low),
-                               float(b.close), float(b.volume)]
-                              for b in self._historical_data]
-        # set_trace()
+                      float(b.close), float(b.volume)]
+                     for b in self._historical_data]
+
         bars = pd.DataFrame(
             index=bars_index,
             columns=['open_price', 'high', 'low', 'close_price', 'volume'],
