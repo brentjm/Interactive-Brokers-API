@@ -117,14 +117,10 @@ class IBApp(IBWrapper, IBClient):
         """
         super().error(reqId, errorCode, errorString)
 <<<<<<< HEAD
-<<<<<<< HEAD
         print(reqId)
 =======
         pass
 >>>>>>> 486d5f1487a15a9a53374407062f4fa729a6b39e
-=======
-        pass
->>>>>>> 3761bfd31c9bf62bfd501adbaa1ba8e17c035e51
 
     def _load_contracts(self, filename):
         """Load saved contracts.
