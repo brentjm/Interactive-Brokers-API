@@ -116,7 +116,7 @@ class IBApp(IBWrapper, IBClient):
         """Overide EWrapper error method.
         """
         super().error(reqId, errorCode, errorString)
-        pass
+        print(reqId)
 
     def _load_contracts(self, filename):
         """Load saved contracts.
@@ -560,10 +560,11 @@ class IBApp(IBWrapper, IBClient):
             names=["symbol", "price"]
         )
 
-        data = pd.DataFrame(index=bars[symbol].index, columns=columns)
+        # Create an empty DataFrame
+        data = pd.DataFrame(index=list(bars.keys())[0].index, columns=columns)
 
-        for b in bars:
-            data[b] = bars[b]
+        for symbol in bars:
+            data[symbol] = bars[symbol]
 
         # Try to get rid of any missing data.
         data.fillna(method="ffill", inplace=True)
@@ -603,7 +604,8 @@ class IBApp(IBWrapper, IBClient):
             time.sleep(0.2)
 
         # Convert the data into
-        bars_index = [b.date for b in self._historical_data]
+        bars_index = [b.date[:4]+"-"+b.date[4:6]+"-"+b.date[6:]
+                      for b in self._historical_data]
         bars_data = [[float(b.open), float(b.high), float(b.low),
                       float(b.close), float(b.volume)]
                      for b in self._historical_data]
