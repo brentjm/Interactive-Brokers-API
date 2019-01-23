@@ -18,10 +18,10 @@ Classes
 import os.path
 import time
 import logging
-import datetime
 import threading
 import json
 import pandas as pd
+from datetime import datetime
 from ibapi import wrapper
 from ibapi.client import EClient
 from ibapi.contract import Contract
@@ -56,7 +56,7 @@ def setup_logger():
     console = logging.StreamHandler()
     console.setLevel(logging.ERROR)
     logger.addHandler(console)
-    logging.debug("now is %s", datetime.datetime.now())
+    logging.debug("now is %s", datetime.now())
 
 
 class IBClient(EClient):
@@ -217,8 +217,6 @@ class IBApp(IBWrapper, IBClient):
         contracts = []
         for desc in contractDescriptions:
             contracts.append(desc.contract)
-
-        # Setting a value to _contract_details signals that the request
         # is complete.
         self._contract_details = contracts
 
@@ -443,7 +441,7 @@ class IBApp(IBWrapper, IBClient):
 
         orders = dict()
         for oid, order in self._saved_orders.items():
-            if order.contract.symbol == symbol:
+            if order['contract'].symbol == symbol:
                 orders[oid] = order
         return orders
 
@@ -454,7 +452,6 @@ class IBApp(IBWrapper, IBClient):
         Arguments:
         order_id (int): The order_id of a previously created order.
         """
-        # set_trace()
         if order_id in self._saved_orders:
             self.placeOrder(order_id, self._saved_orders[order_id]['contract'],
                             self._saved_orders[order_id]['order'])
@@ -465,7 +462,7 @@ class IBApp(IBWrapper, IBClient):
         """
         order_ids = list(self._saved_orders.keys())
         for order_id in order_ids:
-            self.place_order(order_id)
+            self.place_order(order_id=order_id)
 
     def get_open_orders(self):
         """Call the IBApi.EClient reqOpenOrders. Open orders are returned via
@@ -530,7 +527,7 @@ class IBApp(IBWrapper, IBClient):
         return (pandas.DataFrame): Price history data.
         """
         if end_date is None:
-            end_date = datetime.datetime.today()
+            end_date = datetime.today()
 
         # If only a single symbol is passed convert it
         # to a list with a single item.
@@ -560,9 +557,19 @@ class IBApp(IBWrapper, IBClient):
             except HistoricalRequestError as err:
                 print(err.message)
 
+        # Format the bars dictionary for conversion into DataFrame
         bars = {(outerKey, innerKey): values for outerKey, innerDict
                 in bars.items() for innerKey, values in innerDict.items()}
         bars = pd.DataFrame(bars)
+
+        # Reindex the bars using real time stamps.
+        if (bar_size.find("secs") != -1 or bar_size.find("min") != -1 or
+            bar_size.find("hour") != -1):
+            index = [datetime.strptime(d, "%Y-%m-%d %H:%M:%S")
+                     for d in bars.index]
+        else:
+            index = [datetime.strptime(d, "%Y-%m-%d") for d in bars.index]
+        bars.index = index
 
         # Try to get rid of any missing data.
         bars.fillna(method="ffill", inplace=True)
@@ -591,9 +598,9 @@ class IBApp(IBWrapper, IBClient):
                                info, rth, 1, False, [])
 
         # Wait until the request has returned (make it blocking).
-        start_time = datetime.datetime.now()
+        start_time = datetime.now()
         while self._historical_data_req_end is not True:
-            if (datetime.datetime.now() - start_time).microseconds > 1000000:
+            if (datetime.now() - start_time).microseconds > 1000000:
                 raise HistoricalRequestError(
                     "Timeout occurred while retrieving price data for {}"
                     .format(symbol),
@@ -662,6 +669,62 @@ class IBApp(IBWrapper, IBClient):
         """Stop exectution.
         """
         pass
+
+    def quick_bracket(self, symbol=None, instruction=None, quantity=None,
+                      amount=1000, limit_percent=None, profit_percent=None):
+        """Calculate bracket order for symbol using a limit provided by
+        limit_percent.
+
+        Arguments
+        symbol (str): Ticker symbol
+        instruction (str): "BUY" | "SELL"
+        quantity (int): Number of shares
+        amount (float): Amount in dollars to trade
+        limit_percent (float): Percent change from current quote to set limit.
+        profit_percent (float): Percent change from limit price to take profit.
+
+        Returns (dict) Parameters necessary to place a bracket order.
+        """
+        # Calculate a reasonable change if limit_percent is not given.
+        if limit_percent is None:
+            if instruction == "BUY":
+                limit_percent = -0.3
+            if instruction == "SELL":
+                limit_percent = 0.3
+
+        # Calculate a reasonable change if limit_percent is not given.
+        if profit_percent is None:
+            if instruction == "BUY":
+                profit_percent = 0.3
+            if instruction == "SELL":
+                profit_percent = -0.3
+
+        # Get the quote
+        quote = self.get_quotes(symbol).loc[symbol]
+
+        # Calculate the limit price from the limit_percent.
+        limit_price = round(quote * (1 + limit_percent/100.), 2)
+        # Calculate the profit price from the limit_price.
+        profit_price = round(limit_price * (1 + profit_percent/100.), 2)
+
+        # Calculate quantity if amount was provided.
+        if quantity is None:
+            quantity = int(amount / quote)
+
+        req_order = {
+            'symbol': symbol,
+            'instruction': instruction,
+            'quantity': quantity,
+            'price': limit_price,
+            'tif': "DAY",
+            'outside_rth': True,
+            'profit_price': profit_price,
+            'stop_price': None
+        }
+        self.create_bracket_orders(req_orders=[req_order])
+
+        for order_id in list(self.get_saved_orders(symbol).keys()):
+            self.place_order(order_id=order_id)
 
 
 def main(port=7497):
