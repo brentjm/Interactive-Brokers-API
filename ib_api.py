@@ -116,11 +116,7 @@ class IBApp(IBWrapper, IBClient):
         """Overide EWrapper error method.
         """
         super().error(reqId, errorCode, errorString)
-<<<<<<< HEAD
         print(reqId)
-=======
-        pass
->>>>>>> 486d5f1487a15a9a53374407062f4fa729a6b39e
 
     def _load_contracts(self, filename):
         """Load saved contracts.
