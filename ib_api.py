@@ -515,61 +515,59 @@ class IBApp(IBWrapper, IBClient):
         return quotes
 
     def get_price_history(self, symbols=None, start_date=None, end_date=None,
-                          rth=False):
+                          bar_size="1 day", rth=False):
         """Get the price history for symbols.
 
         Arguments:
         symbols (str|list): Equity ticker symbol or list of ticker symbols.
         start_date (datetime): First date for data retrieval.
         end_date (datetime): Last data for data retrieval.
+        bar_size (str): Bar size (e.g. "1 min", "1 day", "1 month")
+            for valid strings see:
+               http://interactivebrokers.github.io/tws-api/historical_bars.html
         rth (bool): True to only return data within regular trading hours.
 
         return (pandas.DataFrame): Price history data.
         """
         if end_date is None:
             end_date = datetime.datetime.today()
-        number_days = (end_date - start_date).days
-        end_date = end_date.strftime("%Y%m%d %H:%M:%S")
 
         # If only a single symbol is passed convert it
         # to a list with a single item.
         if isinstance(symbols, str):
             symbols = [symbols]
 
+        # Estimate a duration string for the given date span.
+        duration = end_date - start_date
+        if duration.days >= 365:
+            duration = "{} Y".format(duration.days/365)
+        elif duration.days < 365 and duration.days > 1:
+            duration = "{} D".format(duration.days)
+        else:
+            duration = "{} S".format(duration.seconds)
         # Get the bar data for each symbol
         bars = {}
         for symbol in symbols:
             try:
                 bars[symbol] = self._req_historical_data(
                     symbol,
-                    end_date=end_date,
-                    duration="{} D".format(number_days),
-                    size="1 day",
+                    end_date=end_date.strftime("%Y%m%d %H:%M:%S"),
+                    duration=duration,
+                    size=bar_size,
                     info="TRADES",
                     rth=rth
                 )
             except HistoricalRequestError as err:
                 print(err.message)
 
-        # Create a MultiIndex DataFrame.
-        columns = pd.MultiIndex.from_product(
-            [
-                sorted(list(bars.keys())),
-                ["close_price", "high", "low", "open_price", "volume"]
-            ],
-            names=["symbol", "price"]
-        )
-
-        # Create an empty DataFrame
-        data = pd.DataFrame(index=list(bars.keys())[0].index, columns=columns)
-
-        for symbol in bars:
-            data[symbol] = bars[symbol]
+        bars = {(outerKey, innerKey): values for outerKey, innerDict
+                in bars.items() for innerKey, values in innerDict.items()}
+        bars = pd.DataFrame(bars)
 
         # Try to get rid of any missing data.
-        data.fillna(method="ffill", inplace=True)
+        bars.fillna(method="ffill", inplace=True)
 
-        return data
+        return bars
 
     def _req_historical_data(self, symbol, end_date="", duration="20 D",
                              size="1 day", info="TRADES", rth=False):
