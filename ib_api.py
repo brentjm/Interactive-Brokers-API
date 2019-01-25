@@ -535,6 +535,7 @@ class IBApp(IBWrapper, IBClient):
             symbols = [symbols]
 
         # Estimate a duration string for the given date span.
+        # TODO fix duration of seconds
         duration = end_date - start_date
         if duration.days >= 365:
             duration = "{} Y".format(int(duration.days/365))
