@@ -537,7 +537,7 @@ class IBApp(IBWrapper, IBClient):
         # Estimate a duration string for the given date span.
         duration = end_date - start_date
         if duration.days >= 365:
-            duration = "{} Y".format(duration.days/365)
+            duration = "{} Y".format(int(duration.days/365))
         elif duration.days < 365 and duration.days > 1:
             duration = "{} D".format(duration.days)
         else:
