@@ -380,6 +380,60 @@ class IBApp(IBWrapper, IBClient):
                 "order": order, "contract": contract
             }
 
+    def create_stop_limit_orders(self, req_orders=None):
+        """Create a trailing stop order.
+
+        Arguments:
+        req_orders (list): list of dictionaries - keys are:
+            symbol (str): Equity ticker symbol.
+            instruction (str): "BUY" | "SELL"
+            quantity (float): Order quantity.
+            stop_price (float): stop price
+            limit_price (float): limit price.
+            outside_rth (bool): outside regular trading hours
+            tif (str): Time in force "DAY" | "GTC"
+            profit_price (float): Profit taking price.
+        """
+        # If only a single contract (dict) is passed convert it
+        # to a list with a single item.
+        if not isinstance(req_orders, list):
+            req_orders = [req_orders]
+
+        for req_order in req_orders:
+            contract = self.make_contract(symbol=req_order['symbol'])
+
+            # Create the order
+            order_id = self._get_next_order_id()
+            order = Order()
+            order.orderId = order_id
+            order.action = req_order['instruction']
+            order.orderType = "STP LMT"
+            order.totalQuantity = req_order['quantity']
+            order.lmtPrice = req_order['limit_price']
+            order.auxPrice = req_order['stop_price']
+            order.outsideRth = req_order['outside_rth']
+            order.tif = req_order['tif']
+            order.transmit = False
+            self._saved_orders[order_id] = {
+                "order": order, "contract": contract
+            }
+
+            # Create the profit taker order
+            if req_order['profit_price'] is not None:
+                profit_taker_order_id = self._get_next_order_id()
+                profit_taker = Order()
+                profit_taker.orderId = profit_taker_order_id
+                profit_taker.action = "SELL"\
+                    if req_order['instruction'] == "BUY" else "BUY"
+                profit_taker.orderType = "LMT"
+                profit_taker.totalQuantity = req_order['quantity']
+                profit_taker.lmtPrice = req_order['profit_price']
+                profit_taker.parentId = order.orderId
+                profit_taker.transmit = False
+                self._saved_orders[profit_taker_order_id] = {
+                    "order": profit_taker, "contract": contract
+                }
+
     def create_pegged_orders(self, req_orders=None):
         """Create a pegged to bench mark order.
 
