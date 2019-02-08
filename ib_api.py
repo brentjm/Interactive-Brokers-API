@@ -556,7 +556,7 @@ class IBApp(IBWrapper, IBClient):
             quote = self._req_historical_data(
                 symbol,
                 end_date="",
-                duration="1 D",
+                duration="2 D",
                 size="1 min",
                 info="TRADES",
                 rth=False
