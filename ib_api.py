@@ -20,6 +20,7 @@ import time
 import logging
 import threading
 import json
+import numpy as np
 import pandas as pd
 from datetime import datetime
 from ibapi import wrapper
@@ -594,7 +595,7 @@ class IBApp(IBWrapper, IBClient):
         if duration.days >= 365:
             duration = "{} Y".format(int(duration.days/365))
         elif duration.days < 365 and duration.days > 1:
-            duration = "{} D".format(duration.days)
+            duration = "{} D".format(np.busday_count(start_date, end_date))
         else:
             duration = "{} S".format(duration.seconds)
         # Get the bar data for each symbol
