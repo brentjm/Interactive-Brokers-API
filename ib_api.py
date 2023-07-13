@@ -23,6 +23,7 @@ import json
 import numpy as np
 import pandas as pd
 from datetime import datetime
+from pdb import set_trace
 from ibapi import wrapper
 from ibapi.client import EClient
 from ibapi.contract import Contract
@@ -30,7 +31,6 @@ from ibapi.common import OrderId, ListOfContractDescription, BarData,\
         HistogramDataList, TickerId
 from ibapi.order import Order
 from ibapi.order_state import OrderState
-
 API_THREAD = None
 
 
@@ -63,6 +63,7 @@ def setup_logger():
 class IBClient(EClient):
     """Subclass EClient, which delivers message to the TWS API socket.
     """
+
     def __init__(self, app_wrapper):
         EClient.__init__(self, app_wrapper)
 
@@ -71,6 +72,7 @@ class IBWrapper(wrapper.EWrapper):
     """Subclass EWrapper, which translates messages from the TWS API socket
     to the program.
     """
+
     def __init__(self):
         wrapper.EWrapper.__init__(self)
 
@@ -78,6 +80,7 @@ class IBWrapper(wrapper.EWrapper):
 class HistoricalRequestError(Exception):
     """Exceptions generated during requesting historical stock price data.
     """
+
     def __init__(self, message, errors):
         super().__init__(message)
 
@@ -98,6 +101,7 @@ class IBApp(IBWrapper, IBClient):
     TODO
     positions
     """
+
     def __init__(self):
         IBWrapper.__init__(self)
         IBClient.__init__(self, app_wrapper=self)
@@ -105,6 +109,7 @@ class IBApp(IBWrapper, IBClient):
         self.order_id = None
         self.saved_contract_details = {}
         self.positions = []
+        self.account_summaries = []
         self._contract_details = {}
         self._saved_orders = {}
         self._open_orders = []
@@ -113,7 +118,7 @@ class IBApp(IBWrapper, IBClient):
         self._histogram = None
         self._load_contracts('contract_file.json')
 
-    def error(self, reqId: TickerId, errorCode: int, errorString: str):
+    def error(self, reqId: TickerId, errorCode: int, errorString: str, *args):
         """Overide EWrapper error method.
         """
         super().error(reqId, errorCode, errorString)
@@ -157,7 +162,7 @@ class IBApp(IBWrapper, IBClient):
         return current_order_id
 
     def get_contract_details(self, symbol=None):
-        """Find the contract (STK, USD, NYSE|NASDAY.NMS|ARGA) for the symbol.
+        """Find the contract (STK, USD, NYSE|NASDAQ.NMS|ARCA) for the symbol.
         Upon execution of IB backend, the EWrapper.symbolSamples is called,
         which is over-ridden to save the contracts to a class dictionary.
         This function then monitors the class dictionary until
@@ -189,7 +194,7 @@ class IBApp(IBWrapper, IBClient):
                     elif contract.primaryExchange == "ARCA":
                         break
                     # Nasdaq stock
-                    elif contract.primaryExchange == "NASDAQ.NMS":
+                    elif contract.primaryExchange == "NASDAQ":
                         contract.primaryExchange = "ISLAND"
                         break
 
@@ -238,9 +243,36 @@ class IBApp(IBWrapper, IBClient):
 
         return contract
 
+    def get_account_summary(self):
+        """Get the account summaary.
+
+        Returns (pandas DataFrame): Dataframe of the account information.
+        """
+        self.account_summaries = []
+        self.reqAccountSummary(9001, "All", "$LEDGER:USD")
+        time.sleep(1)
+
+        return pd.DataFrame.from_dict(self.account_summaries).set_index('account')
+
+    def accountSummary(self, reqId: int, account: str, tag: str, value: str,
+                       currency: str):
+        super().accountSummary(reqId, account, tag, value, currency)
+        self.account_summaries.append({
+            "account": account,
+            "tag": tag,
+            "value": value
+        })
+
+    def accountSummaryEnd(self, reqId: int):
+        super().accountSummaryEnd(reqId)
+        self.cancelAccountSummary(reqId)
+
     def get_positions(self):
         """Get the account positions. If the class variable, positions, exists,
-        return that value, else call the EClient method reqPositions, wait for
+        return that value, else call the EClient method reqPositions. The EClient
+        method reqPosition calls the position method defined in this class
+        for each position, then calls the positionEnd method after all positions
+        are cycles. Finally, this method waits for
         a short time and then return the class variable positions.
 
         Returns (dict): Dictionary of the positions information.
@@ -259,7 +291,8 @@ class IBApp(IBWrapper, IBClient):
             'symbol': contract.symbol,
             'secType': contract.secType,
             'position': position,
-            'cost': avgCost
+            'cost': avgCost,
+            'contract': str(contract)
         })
 
     def positionEnd(self):
@@ -281,7 +314,6 @@ class IBApp(IBWrapper, IBClient):
             tif (str): Time in force "DAY" | "GTC"
             profit_price (float): Price for profit taking
             stop_price (float): Price for stop loss
-            parent_id (int): Id of parent trade.
         """
         # If only a single contract (dict) is passed convert it
         # to a list with a single item.
@@ -316,6 +348,7 @@ class IBApp(IBWrapper, IBClient):
                 profit_taker.orderType = "LMT"
                 profit_taker.totalQuantity = req_order['quantity']
                 profit_taker.lmtPrice = req_order['profit_price']
+                profit_taker.outsideRth = req_order['outside_rth']
                 profit_taker.parentId = parent.orderId
                 profit_taker.transmit = False
                 self._saved_orders[order_id] = {
@@ -332,6 +365,7 @@ class IBApp(IBWrapper, IBClient):
                 stop_loss.orderType = "STP"
                 stop_loss.auxPrice = req_order['stop_price']
                 stop_loss.totalQuantity = req_order['quantity']
+                stop_loss.outsideRth = req_order['outside_rth']
                 stop_loss.parentId = parent.orderId
                 stop_loss.transmit = False
                 self._saved_orders[order_id] = {
@@ -382,7 +416,7 @@ class IBApp(IBWrapper, IBClient):
             }
 
     def create_stop_limit_orders(self, req_orders=None):
-        """Create a trailing stop order.
+        """Create a stop limit order.
 
         Arguments:
         req_orders (list): list of dictionaries - keys are:
@@ -394,6 +428,7 @@ class IBApp(IBWrapper, IBClient):
             outside_rth (bool): outside regular trading hours
             tif (str): Time in force "DAY" | "GTC"
             profit_price (float): Profit taking price.
+            stop_protection_price (float): Stop loss price.
         """
         # If only a single contract (dict) is passed convert it
         # to a list with a single item.
@@ -435,6 +470,21 @@ class IBApp(IBWrapper, IBClient):
                     "order": profit_taker, "contract": contract
                 }
 
+            # Create the stop loss order
+            stop_loss_order_id = self._get_next_order_id()
+            stop_loss = Order()
+            stop_loss.orderId = stop_loss_order_id
+            stop_loss.action = "SELL"\
+                if req_order['instruction'] == "BUY" else "BUY"
+            stop_loss.orderType = "STP"
+            stop_loss.totalQuantity = req_order['quantity']
+            stop_loss.auxPrice = req_order['stop_protection_price']
+            stop_loss.parentId = order.orderId
+            stop_loss.transmit = False
+            self._saved_orders[stop_loss_order_id] = {
+                "order": stop_loss, "contract": contract
+            }
+
     def create_pegged_orders(self, req_orders=None):
         """Create a pegged to bench mark order.
 
@@ -444,8 +494,8 @@ class IBApp(IBWrapper, IBClient):
             instruction (str): "BUY" | "SELL"
             quantity (float): Order quantity.
             starting_price (float): Order starting price.
-            outside_rth (bool): outside regular trading hours
-            tif (str): Time in force "DAY" | "GTC"
+            outside_rth (bool): outside regular trading hours (Not usable)
+            tif (str): Time in force "DAY" | "GTC" (Not usable)
             peg_change_amount (float): Change of price for the target
             ref_change_amount (float): Change of price of the reference
             ref_contract_id (int): Contract ID of the reference
@@ -455,6 +505,7 @@ class IBApp(IBWrapper, IBClient):
             ref_price (float): Start price of the reference
             ref_lower_price (float): Lower ref price allowed
             ref_upper_price (float): Upper ref price allowed
+            profit_price (float): Price for profit taking
         """
         # If only a single contract (dict) is passed convert it
         # to a list with a single item.
@@ -466,24 +517,44 @@ class IBApp(IBWrapper, IBClient):
 
             # Create the parent order
             order_id = self._get_next_order_id()
-            order = Order()
-            order.orderId = order_id
-            order.orderType = "PEG BENCH"
-            order.action = req_order['instruction']
-            order.totalQuantity = req_order['quantity']
-            order.startingPrice = req_order['starting_price']
-            order.isPeggedChangeAmountDecrease = False
-            order.peggedChangeAmount = req_order['peg_change_amount']
-            order.referenceChangeAmount = req_order['ref_change_amount']
-            order.referenceContractId = req_order['ref_contract_id']
-            order.referenceExchange = req_order['ref_exchange']
-            order.stockRefPrice = req_order['ref_price']
-            order.stockRangeLower = req_order['ref_lower_price']
-            order.stockRangeUpper = req_order['ref_upper_price']
-            order.transmit = False
+            parent = Order()
+            parent.orderId = order_id
+            parent.orderType = "PEG BENCH"
+            parent.action = req_order['instruction']
+            parent.totalQuantity = req_order['quantity']
+            parent.startingPrice = req_order['starting_price']
+            parent.isPeggedChangeAmountDecrease = False
+            parent.peggedChangeAmount = req_order['peg_change_amount']
+            parent.referenceChangeAmount = req_order['ref_change_amount']
+            parent.referenceContractId = req_order['ref_contract_id']
+            parent.referenceExchange = req_order['ref_exchange']
+            parent.stockRefPrice = req_order['ref_price']
+            parent.stockRangeLower = req_order['ref_lower_price']
+            parent.stockRangeUpper = req_order['ref_upper_price']
+            # This order type does not appear to take tif or outsideRth
+            #parent.tif = req_order["tif"]
+            #parent.outsideRth = req_order['outside_rth']
+            parent.transmit = False
             self._saved_orders[order_id] = {
-                "order": order, "contract": contract
+                "order": parent, "contract": contract
             }
+
+            # Create the profit taker order
+            if req_order['profit_price'] is not None:
+                order_id = self._get_next_order_id()
+                profit_taker = Order()
+                profit_taker.orderId = order_id
+                profit_taker.action = "SELL"\
+                    if req_order['instruction'] == "BUY" else "BUY"
+                profit_taker.orderType = "LMT"
+                profit_taker.totalQuantity = req_order['quantity']
+                profit_taker.lmtPrice = req_order['profit_price']
+                profit_taker.outsideRth = req_order['outside_rth']
+                profit_taker.parentId = parent.orderId
+                profit_taker.transmit = False
+                self._saved_orders[order_id] = {
+                    "order": profit_taker, "contract": contract
+                }
 
     def get_saved_orders(self, symbol=None):
         """Return saved orders for symbol. If symbol is None
@@ -523,7 +594,30 @@ class IBApp(IBWrapper, IBClient):
         """Call the IBApi.EClient reqOpenOrders. Open orders are returned via
         the callback openOrder.
         """
+        self._open_orders = []
         self.reqOpenOrders()
+        time.sleep(1)
+        if len(self._open_orders) > 0:
+            self._open_orders = pd.DataFrame.from_dict(self._open_orders)
+            self._open_orders = self._open_orders.sort_values(["account", "symbol"])
+            self._open_orders = self._open_orders.set_index("symbol")
+            self._open_orders = self._open_orders[[
+                "secType",
+                "account",
+                "action",
+                "type",
+                "quantity",
+                "limit_price",
+                "aux_price",
+                "trailingPercent",
+                "tif",
+                "outsideRth",
+                "goodTillDate",
+                "orderId",
+                "parentId"
+            ]]
+
+        return self._open_orders
 
     def openOrder(self, orderId: OrderId, contract: Contract, order: Order,
                   orderState: OrderState):
@@ -532,14 +626,37 @@ class IBApp(IBWrapper, IBClient):
         """
         super().openOrder(orderId, contract, order, orderState)
         self._open_orders.append({
-            'order_id': orderId,
-            'contract': contract,
-            'order': order
+            "symbol": contract.symbol,
+            "secType": contract.secType,
+            "orderId": orderId,
+            "account": order.account,
+            "action": order.action,
+            "quantity": order.totalQuantity,
+            "type": order.orderType,
+            "limit_price": order.lmtPrice,
+            "aux_price": order.auxPrice,
+            "tif": order.tif,
+            "parentId": order.parentId,
+            "goodTillDate": order.goodTillDate,
+            "outsideRth": order.outsideRth,
+            "trailingPercent": order.trailingPercent
         })
+
+    def cancel_order(self, order_id=None):
+        """Cancel the order with order_id
+
+        Arguments:
+        order_id (int): The order_id of an open order.
+        """
+        self.cancelOrder(order_id);
+
+    def cancel_all_orders(self):
+        """Cancel all open orders.
+        """
+        self.reqGlobalCancel()
 
     def get_quotes(self, symbols=None):
         """Get a quote for the symbol. Callsback to
-        Warning: This may incur fees!
 
         Arguments:
         symbols (str|list): Equity ticker symbol or list of ticker symbols.
@@ -582,7 +699,7 @@ class IBApp(IBWrapper, IBClient):
         return (pandas.DataFrame): Price history data.
         """
         if end_date is None:
-            end_date = datetime.today()
+            end_date = datetime.date(datetime.today())
 
         # If only a single symbol is passed convert it
         # to a list with a single item.
@@ -590,21 +707,22 @@ class IBApp(IBWrapper, IBClient):
             symbols = [symbols]
 
         # Estimate a duration string for the given date span.
-        # TODO fix duration of seconds
         duration = end_date - start_date
         if duration.days >= 365:
             duration = "{} Y".format(int(duration.days/365))
         elif duration.days < 365 and duration.days > 1:
-            duration = "{} D".format(np.busday_count(start_date, end_date))
+            np_start_date = np.datetime64(start_date.strftime("%Y-%m-%d"))
+            np_end_date = np.datetime64(end_date.strftime("%Y-%m-%d"))
+            duration = "{} D".format(np.busday_count(np_start_date, np_end_date))
         else:
-            duration = "{} S".format(duration.seconds)
+            duration = "{} S".format(duration.days*(14*3600) + duration.seconds)
         # Get the bar data for each symbol
         bars = {}
         for symbol in symbols:
             try:
                 bars[symbol] = self._req_historical_data(
                     symbol,
-                    end_date=end_date.strftime("%Y%m%d %H:%M:%S"),
+                    end_date=end_date.strftime("%Y%m%d %H:%M:%S US/Eastern"),
                     duration=duration,
                     size=bar_size,
                     info="TRADES",
@@ -621,10 +739,10 @@ class IBApp(IBWrapper, IBClient):
         # Reindex the bars using real time stamps.
         if (bar_size.find("secs") != -1 or bar_size.find("min") != -1 or
             bar_size.find("hour") != -1):
-            index = [datetime.strptime(d, "%Y-%m-%d %H:%M:%S")
+            index = [datetime.strptime(d, "%Y-%m-%d %H:%M:%S America/New_York")
                      for d in bars.index]
         else:
-            index = [datetime.strptime(d, "%Y-%m-%d") for d in bars.index]
+            index = [datetime.strptime(d, "%Y-%m-%d").date() for d in bars.index]
         bars.index = index
 
         # Try to get rid of any missing data.
@@ -783,7 +901,7 @@ class IBApp(IBWrapper, IBClient):
             self.place_order(order_id=order_id)
 
 
-def main(port=7497):
+def main(host="127.0.0.1", port=7497):
     """Entry point into the program.
 
     Arguments:
@@ -792,7 +910,7 @@ def main(port=7497):
     global API_THREAD
     try:
         app = IBApp()
-        app.connect("127.0.0.1", port, clientId=0)
+        app.connect(host, port, clientId=0)
         print("serverVersion:%s connectionTime:%s" % (app.serverVersion(),
                                                       app.twsConnectionTime()))
         API_THREAD = threading.Thread(target=app.run)
@@ -805,5 +923,5 @@ def main(port=7497):
 if __name__ == "__main__":
     import sys
     # port number socker server is using (paper: 7497, live: 7496)
-    PORT_NUMBER = sys.argv[1]
+    PORT_NUMBER = int(sys.argv[1])
     main(port=PORT_NUMBER)
