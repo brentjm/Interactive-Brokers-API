@@ -20,7 +20,7 @@ a shell or Jupyter Lab.
 Use port 7497 for paper trading.
 
 ## Example
-[Demo Jupyter Lab Notebook](http://htmlpreview.github.com/?https://github.com/brentjm/Interactive-Brokers-API/blob/master/InteractiveBrokersDemo.html)
+[Demo Jupyter Lab Notebook](http://htmlpreview.github.io/?https://github.com/brentjm/Interactive-Brokers-API/blob/master/InteractiveBrokersDemo.html)
 
 # Author
 **Brent Maranzano**
